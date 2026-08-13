@@ -12,5 +12,6 @@ void test_id_alloc_uniqueness(void);
 void test_id_alloc_teid_floor(void);
 void test_sess_store_cas(void);
 void test_sess_store_pending_ttl(void);
+void test_txn_sm_timeout_paths(void);
 
 #endif /* VPE_TEST_REGISTRY_H */

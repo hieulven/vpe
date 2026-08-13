@@ -10,6 +10,7 @@
 #include "v_port_txn.h"
 #include "v_db_script.h"
 #include "v_id_alloc.h"
+#include "v_txn.h"
 
 #include <rte_eal.h>
 #include <stdio.h>
@@ -54,6 +55,7 @@ int main(void)
 
     if (v_port_mem_init(TEST_CTX_POOL_CAP) != 0) { fprintf(stderr, "mem init failed\n"); return 1; }
     if (v_port_txn_init() != 0) { fprintf(stderr, "txn init failed\n"); return 1; }
+    if (v_txn_sm_init() != 0) { fprintf(stderr, "txn_sm init failed\n"); return 1; }
     if (v_db_script_init() != 0) { fprintf(stderr, "db_script init failed\n"); return 1; }
     if (v_port_db_init() != 0) { fprintf(stderr, "db init failed\n"); return 1; }
     if (v_port_vdp_io_init() != 0) { fprintf(stderr, "vdp init failed\n"); return 1; }
@@ -79,6 +81,7 @@ int main(void)
     test_id_alloc_teid_floor();
     test_sess_store_cas();
     test_sess_store_pending_ttl();
+    test_txn_sm_timeout_paths();
 
     printf("\n%d/%d checks passed\n", g_test_count - g_test_failures, g_test_count);
 
