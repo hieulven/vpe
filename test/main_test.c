@@ -81,6 +81,8 @@ int main(void)
     test_txn_sm_timeout_paths();
     test_dispatch_echo();
     test_dispatch_any_worker();
+    test_retrans_cache_basic();
+    test_retrans_cache_ttl();
 
     printf("\n%d/%d checks passed\n", g_test_count - g_test_failures, g_test_count);
 

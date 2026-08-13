@@ -15,5 +15,7 @@ void test_sess_store_pending_ttl(void);
 void test_txn_sm_timeout_paths(void);
 void test_dispatch_echo(void);
 void test_dispatch_any_worker(void);
+void test_retrans_cache_basic(void);
+void test_retrans_cache_ttl(void);
 
 #endif /* VPE_TEST_REGISTRY_H */
