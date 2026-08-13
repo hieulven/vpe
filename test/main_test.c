@@ -9,6 +9,7 @@
 #include "v_port_vdp.h"
 #include "v_port_txn.h"
 #include "v_db_script.h"
+#include "v_id_alloc.h"
 
 #include <rte_eal.h>
 #include <stdio.h>
@@ -63,14 +64,23 @@ int main(void)
         return 1;
     }
 
+    if (v_id_alloc_init() != 0) { fprintf(stderr, "id_alloc init failed\n"); return 1; }
+    if (!test_wait_until(v_id_alloc_ready, 60000)) {
+        fprintf(stderr, "id_alloc never became ready (initial 2048-ring refill)\n");
+        return 1;
+    }
+
     printf("=== vpe standalone test suite ===\n");
 
     test_db_script();
     test_db_script_noscript();
     test_seid();
+    test_id_alloc_uniqueness();
+    test_id_alloc_teid_floor();
 
     printf("\n%d/%d checks passed\n", g_test_count - g_test_failures, g_test_count);
 
+    v_id_alloc_fini();
     v_port_db_fini();
     v_port_txn_fini();
     v_port_mem_fini();

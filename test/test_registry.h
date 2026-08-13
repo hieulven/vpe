@@ -8,5 +8,7 @@
 void test_db_script(void);
 void test_db_script_noscript(void);
 void test_seid(void);
+void test_id_alloc_uniqueness(void);
+void test_id_alloc_teid_floor(void);
 
 #endif /* VPE_TEST_REGISTRY_H */
