@@ -10,5 +10,7 @@ void test_db_script_noscript(void);
 void test_seid(void);
 void test_id_alloc_uniqueness(void);
 void test_id_alloc_teid_floor(void);
+void test_sess_store_cas(void);
+void test_sess_store_pending_ttl(void);
 
 #endif /* VPE_TEST_REGISTRY_H */

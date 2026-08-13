@@ -77,6 +77,8 @@ int main(void)
     test_seid();
     test_id_alloc_uniqueness();
     test_id_alloc_teid_floor();
+    test_sess_store_cas();
+    test_sess_store_pending_ttl();
 
     printf("\n%d/%d checks passed\n", g_test_count - g_test_failures, g_test_count);
 
