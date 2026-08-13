@@ -9,6 +9,12 @@
 #                         (always against the stubs, real local Redis +
 #                         real DPDK mempool/ring — plan.md §8.1).
 # `make clean`          : remove build artifacts.
+#
+# Layout: every module directory (under src/ and stubs/) is split into
+# <module>/inc (its public header(s)) and <module>/src (its .c file).
+# The include path below picks up every module's inc/ automatically —
+# adding a new module needs no Makefile edit, same as adding a .c file
+# to an existing one.
 
 CC       := gcc
 STD      := -std=gnu99
@@ -16,7 +22,7 @@ WARN     := -Wall -Wextra
 DPDK_CFLAGS := $(shell pkg-config --cflags libdpdk)
 DPDK_LIBS   := $(shell pkg-config --libs libdpdk)
 
-MODULE_DIRS := $(filter %/,$(wildcard src/*/ stubs/*/))
+MODULE_DIRS := $(filter %/,$(wildcard src/*/inc/ stubs/*/inc/))
 INCLUDES := -Iinclude -Istubs -Itest $(addprefix -I,$(MODULE_DIRS))
 CFLAGS   := $(STD) $(WARN) -g -MMD -MP $(INCLUDES) $(DPDK_CFLAGS)
 LDLIBS   := $(DPDK_LIBS) -lhiredis -levent -lpthread -lm
