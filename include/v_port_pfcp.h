@@ -47,6 +47,13 @@ int v_port_pfcp_encode_rsp(const struct pfcp_msg *req,
                             const struct pdu_ses_ctx *ctx, uint8_t cause,
                             uint8_t *buf, size_t *len);
 
+/* ADAPTATION vs plan.md §3.1: a session's TEID is fixed at
+ * establishment and Modification/Deletion requests don't carry it, but
+ * v_flow's deletion path (§5.3 step 8, v_teid_free) needs it to know
+ * what to release. The module that built ctx in the first place is the
+ * natural owner of an accessor for what it embedded. */
+uint32_t v_port_pfcp_ctx_teid(const struct pdu_ses_ctx *ctx);
+
 /* --- serializer (reused) --- */
 int v_port_pdu_serialize(const struct pdu_ses_ctx *ctx,
                           uint8_t *buf, size_t *len);

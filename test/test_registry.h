@@ -21,5 +21,13 @@ void test_flow_establishment_accept(void);
 void test_flow_establishment_reject(void);
 void test_flow_establishment_timeout(void);
 void test_flow_establishment_retransmit_dedup(void);
+void test_flow_modification_accept(void);
+void test_flow_modification_vdp_reject_compensates(void);
+void test_flow_modification_not_found(void);
+void test_flow_modification_bad_seid_fuzz(void);
+void test_flow_deletion_accept_frees_teid(void);
+void test_flow_deletion_vdp_reject_keeps_session(void);
+void test_flow_concurrent_modification_storm(void);
+void test_flow_modification_racing_deletion(void);
 
 #endif /* VPE_TEST_REGISTRY_H */

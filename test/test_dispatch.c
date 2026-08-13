@@ -81,7 +81,7 @@ void test_dispatch_any_worker(void)
     CHECK((int)(p1 + p2 + p3) == N);
 
     unsigned sent = v_dispatch_io_drain_tx(100);
-    CHECK(sent == N);
+    CHECK((int)sent == N);
 
     printf("test_dispatch_any_worker: done\n");
 }

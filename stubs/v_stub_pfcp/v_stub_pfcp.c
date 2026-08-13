@@ -160,6 +160,11 @@ int v_port_pfcp_delete_session(const struct pfcp_msg *req, struct pdu_ses_ctx *c
     return RET_CODE_OK;
 }
 
+uint32_t v_port_pfcp_ctx_teid(const struct pdu_ses_ctx *ctx)
+{
+    return ((const struct v_stub_ses_ctx *)ctx)->teid;
+}
+
 int v_port_pfcp_encode_rsp(const struct pfcp_msg *req, const struct pdu_ses_ctx *ctx,
                             uint8_t cause, uint8_t *buf, size_t *len)
 {

@@ -89,6 +89,14 @@ int main(void)
     test_flow_establishment_reject();
     test_flow_establishment_timeout();
     test_flow_establishment_retransmit_dedup();
+    test_flow_modification_accept();
+    test_flow_modification_vdp_reject_compensates();
+    test_flow_modification_not_found();
+    test_flow_modification_bad_seid_fuzz();
+    test_flow_deletion_accept_frees_teid();
+    test_flow_deletion_vdp_reject_keeps_session();
+    test_flow_concurrent_modification_storm();
+    test_flow_modification_racing_deletion();
 
     printf("\n%d/%d checks passed\n", g_test_count - g_test_failures, g_test_count);
 
