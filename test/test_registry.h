@@ -17,5 +17,9 @@ void test_dispatch_echo(void);
 void test_dispatch_any_worker(void);
 void test_retrans_cache_basic(void);
 void test_retrans_cache_ttl(void);
+void test_flow_establishment_accept(void);
+void test_flow_establishment_reject(void);
+void test_flow_establishment_timeout(void);
+void test_flow_establishment_retransmit_dedup(void);
 
 #endif /* VPE_TEST_REGISTRY_H */

@@ -26,6 +26,14 @@ static void lookup_cb(int status, int hit, const uint8_t *resp, size_t len, void
 }
 static int seen_pred(void) { return g_seen; }
 
+static int g_del_ack_seen;
+static void del_ack_cb(int status, const v_db_reply_t *reply, void *arg)
+{
+    (void)status; (void)reply; (void)arg;
+    g_del_ack_seen = 1;
+}
+static int del_ack_seen_pred(void) { return g_del_ack_seen; }
+
 void test_retrans_cache_basic(void)
 {
     printf("-- test_retrans_cache_basic --\n");
@@ -33,6 +41,15 @@ void test_retrans_cache_basic(void)
     uint64_t smf_fseid = 0x1122334455667788ull;
     uint32_t seq = 31415;
     uint16_t part = v_retrans_part(smf_fseid);
+
+    /* V_RETRANS_TTL is only 10s — a key from a previous `make test` run
+     * against this same persistent redis-server can still be alive if
+     * runs are close together. Clean slate before asserting "miss". */
+    char key[64];
+    snprintf(key, sizeof(key), V_RETRANS_KEY_FMT, part, smf_fseid, seq);
+    g_del_ack_seen = 0;
+    v_port_db_cmd(v_port_db_shard_of(key), del_ack_cb, NULL, "DEL %s", key);
+    CHECK(test_wait_until(del_ack_seen_pred, 2000));
 
     /* Miss before anything is stored. */
     g_seen = 0;
