@@ -29,5 +29,8 @@ void test_flow_deletion_accept_frees_teid(void);
 void test_flow_deletion_vdp_reject_keeps_session(void);
 void test_flow_concurrent_modification_storm(void);
 void test_flow_modification_racing_deletion(void);
+void test_node_state_recovery_ts_stable_across_restarts(void);
+void test_node_state_force_new_recovery_ts(void);
+void test_node_state_association(void);
 
 #endif /* VPE_TEST_REGISTRY_H */

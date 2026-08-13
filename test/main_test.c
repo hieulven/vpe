@@ -13,6 +13,7 @@
 #include "v_txn.h"
 #include "v_dispatch.h"
 #include "v_flow.h"
+#include "v_node_state.h"
 
 #include <rte_eal.h>
 #include <stdio.h>
@@ -97,9 +98,13 @@ int main(void)
     test_flow_deletion_vdp_reject_keeps_session();
     test_flow_concurrent_modification_storm();
     test_flow_modification_racing_deletion();
+    test_node_state_recovery_ts_stable_across_restarts();
+    test_node_state_force_new_recovery_ts();
+    test_node_state_association();
 
     printf("\n%d/%d checks passed\n", g_test_count - g_test_failures, g_test_count);
 
+    v_node_state_fini();
     v_dispatch_fini();
     v_id_alloc_fini();
     v_port_db_fini();
