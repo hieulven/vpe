@@ -7,5 +7,6 @@
 
 void test_db_script(void);
 void test_db_script_noscript(void);
+void test_seid(void);
 
 #endif /* VPE_TEST_REGISTRY_H */

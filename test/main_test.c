@@ -67,6 +67,7 @@ int main(void)
 
     test_db_script();
     test_db_script_noscript();
+    test_seid();
 
     printf("\n%d/%d checks passed\n", g_test_count - g_test_failures, g_test_count);
 
