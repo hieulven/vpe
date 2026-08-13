@@ -11,6 +11,7 @@
 #include "v_db_script.h"
 #include "v_id_alloc.h"
 #include "v_txn.h"
+#include "v_dispatch.h"
 
 #include <rte_eal.h>
 #include <stdio.h>
@@ -22,11 +23,6 @@ int g_test_failures;
 int g_test_count;
 
 #define TEST_CTX_POOL_CAP 8192
-
-static void dummy_rx_cb(const uint8_t *buf, size_t len, const struct sockaddr *peer, void *arg)
-{
-    (void)buf; (void)len; (void)peer; (void)arg;
-}
 
 static int scripts_ready_pred(void) { return v_db_script_ready(); }
 
@@ -59,7 +55,8 @@ int main(void)
     if (v_db_script_init() != 0) { fprintf(stderr, "db_script init failed\n"); return 1; }
     if (v_port_db_init() != 0) { fprintf(stderr, "db init failed\n"); return 1; }
     if (v_port_vdp_io_init() != 0) { fprintf(stderr, "vdp init failed\n"); return 1; }
-    if (v_port_pfcp_io_init(dummy_rx_cb, NULL) != 0) { fprintf(stderr, "pfcp io init failed\n"); return 1; }
+    if (v_dispatch_init() != 0) { fprintf(stderr, "dispatch init failed\n"); return 1; }
+    if (v_port_pfcp_io_init(v_dispatch_rx, NULL) != 0) { fprintf(stderr, "pfcp io init failed\n"); return 1; }
 
     if (!test_wait_until(scripts_ready_pred, 5000)) {
         fprintf(stderr, "scripts never became ready — is redis-server running on 127.0.0.1:6379?\n");
@@ -82,9 +79,12 @@ int main(void)
     test_sess_store_cas();
     test_sess_store_pending_ttl();
     test_txn_sm_timeout_paths();
+    test_dispatch_echo();
+    test_dispatch_any_worker();
 
     printf("\n%d/%d checks passed\n", g_test_count - g_test_failures, g_test_count);
 
+    v_dispatch_fini();
     v_id_alloc_fini();
     v_port_db_fini();
     v_port_txn_fini();
