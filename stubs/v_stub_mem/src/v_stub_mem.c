@@ -10,6 +10,8 @@
 static struct rte_mempool *g_pool;
 static unsigned g_capacity;
 
+/* Stage 1 addition (not in plan.md §3.4) — creates the real
+ * rte_mempool the rest of this stub allocates from. */
 int v_port_mem_init(unsigned capacity)
 {
     if (g_pool) {
@@ -33,6 +35,7 @@ int v_port_mem_init(unsigned capacity)
     return RET_CODE_OK;
 }
 
+/* Stage 1 addition — frees the pool. */
 void v_port_mem_fini(void)
 {
     if (g_pool) {
@@ -42,6 +45,7 @@ void v_port_mem_fini(void)
     }
 }
 
+/* Port impl: rte_mempool_get + zero + magic-stamp. */
 struct pdu_ses_ctx *v_port_ctx_alloc(void)
 {
     struct v_stub_ses_ctx *c;
@@ -61,6 +65,8 @@ struct pdu_ses_ctx *v_port_ctx_alloc(void)
     return (struct pdu_ses_ctx *)c;
 }
 
+/* Port impl: magic-checked free (catches a double-free or a pointer
+ * that never came from this pool) then returns the block. */
 void v_port_ctx_free(struct pdu_ses_ctx *ctx)
 {
     if (!ctx)
@@ -74,6 +80,8 @@ void v_port_ctx_free(struct pdu_ses_ctx *ctx)
     rte_mempool_put(g_pool, c);
 }
 
+/* Port impl: zero everything except the magic — used by CAS-retry
+ * loops to reuse a ctx object without a free+realloc round trip. */
 void v_port_ctx_clear(struct pdu_ses_ctx *ctx)
 {
     if (!ctx)
@@ -84,6 +92,8 @@ void v_port_ctx_clear(struct pdu_ses_ctx *ctx)
     c->magic = magic;
 }
 
+/* Port impl: capacity - avail_count — the leak-assertion primitive
+ * every test suite's "pool returns to baseline" check relies on. */
 size_t v_port_ctx_pool_in_use(void)
 {
     if (!g_pool)

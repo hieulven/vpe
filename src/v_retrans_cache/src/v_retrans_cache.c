@@ -12,6 +12,8 @@
 
 #define V_RETRANS_PENDING_POOL_CAP 4096
 
+/* One in-flight lookup — store() is fire-and-forget and doesn't need
+ * one of these. */
 struct v_retrans_pending {
     v_retrans_cb_t cb;
     void *arg;
@@ -19,6 +21,7 @@ struct v_retrans_pending {
 
 static struct rte_mempool *g_pool;
 
+/* Lazily creates the pending-object pool on first use. */
 static int ensure_pool(void)
 {
     if (g_pool)
@@ -33,6 +36,9 @@ static int ensure_pool(void)
     return RET_CODE_OK;
 }
 
+/* Public: FNV-1a over the 8 bytes of smf_fseid, mod V_NUM_PARTS. Not a
+ * session part_id — purely a routing hash so a lookup and its matching
+ * store land on the same key regardless of which pod issues them. */
 uint16_t v_retrans_part(uint64_t smf_fseid)
 {
     uint32_t h = 2166136261u;
@@ -44,6 +50,9 @@ uint16_t v_retrans_part(uint64_t smf_fseid)
     return (uint16_t)(h % V_NUM_PARTS);
 }
 
+/* GET reply handler: NIL -> miss, STRING -> hit (bytes handed straight
+ * from the reply, valid only for this callback's duration), anything
+ * else -> treated as a transport-level failure. */
 static void lookup_reply_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     struct v_retrans_pending *p = (struct v_retrans_pending *)arg;
@@ -64,6 +73,7 @@ static void lookup_reply_cb(int status, const v_db_reply_t *reply, void *arg)
     rte_mempool_put(g_pool, p);
 }
 
+/* Public: GET the cached response for (smf_fseid, seq), if any. */
 int v_retrans_lookup(uint16_t part_id, uint64_t smf_fseid, uint32_t seq,
                       v_retrans_cb_t cb, void *arg)
 {
@@ -89,6 +99,8 @@ int v_retrans_lookup(uint16_t part_id, uint64_t smf_fseid, uint32_t seq,
     return RET_CODE_OK;
 }
 
+/* Ack-only callback — a failed store is logged and otherwise ignored,
+ * matching v_retrans_store()'s fire-and-forget public signature. */
 static void store_ack_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     (void)reply; (void)arg;
@@ -96,6 +108,9 @@ static void store_ack_cb(int status, const v_db_reply_t *reply, void *arg)
         V_LOG(WARNING, "DPDB", "retrans store failed");
 }
 
+/* Public: SETEX the response bytes under (smf_fseid, seq), TTL
+ * V_RETRANS_TTL. Binary-safe (argv path) since resp is a raw PFCP
+ * response and may contain arbitrary bytes. */
 int v_retrans_store(uint16_t part_id, uint64_t smf_fseid, uint32_t seq,
                      const uint8_t *resp, size_t len)
 {

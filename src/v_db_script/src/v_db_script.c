@@ -29,6 +29,11 @@ static const char *g_script_src[V_SCRIPT_COUNT] = {
 static char (*g_sha)[V_SCRIPT_COUNT][V_DB_SCRIPT_SHA_LEN + 1];
 static int g_shard_count;
 
+/* One in-flight EVALSHA call. Owns a bump-allocator scratch buffer so
+ * every key/argv byte is copied out of caller-owned memory before the
+ * async round trip starts — this is what lets a NOSCRIPT retry re-issue
+ * the exact same call without the original caller's buffers needing to
+ * still be alive. */
 struct v_evalsha_pending {
     uint8_t shard;
     v_script_id_t script_id;
@@ -43,6 +48,10 @@ struct v_evalsha_pending {
     size_t scratch_used;
 };
 
+/* One in-flight SCRIPT LOAD. `resume` is NULL for a plain startup/
+ * reconnect load; non-NULL means this load is the NOSCRIPT-recovery
+ * step of a specific pending EVALSHA, which gets re-issued once the
+ * new SHA is cached. */
 struct v_script_load_ctx {
     uint8_t shard;
     v_script_id_t script_id;
@@ -54,6 +63,9 @@ static struct rte_mempool *g_load_pool;
 
 static void issue_evalsha(struct v_evalsha_pending *p);
 
+/* Bump-allocates len bytes from p's scratch buffer and copies src into
+ * it. Returns NULL (scratch exhausted) instead of ever growing/
+ * reallocating — no malloc anywhere in this codebase. */
 static char *scratch_copy(struct v_evalsha_pending *p, const char *src, size_t len)
 {
     if (p->scratch_used + len > sizeof(p->scratch)) {
@@ -67,6 +79,10 @@ static char *scratch_copy(struct v_evalsha_pending *p, const char *src, size_t l
     return dst;
 }
 
+/* SCRIPT LOAD reply handler for both paths (plain load and NOSCRIPT-
+ * recovery load). On success, caches the SHA and — if this load was a
+ * NOSCRIPT recovery — re-issues the original EVALSHA with the fresh
+ * SHA spliced in. On failure, fails the resumed EVALSHA too (if any). */
 static void load_reply_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     struct v_script_load_ctx *lc = (struct v_script_load_ctx *)arg;
@@ -100,6 +116,8 @@ static void load_reply_cb(int status, const v_db_reply_t *reply, void *arg)
     rte_mempool_put(g_load_pool, lc);
 }
 
+/* Dispatches one SCRIPT LOAD. resume is threaded through to
+ * load_reply_cb() unchanged — see struct v_script_load_ctx. */
 static int request_script_load(uint8_t shard, v_script_id_t id, struct v_evalsha_pending *resume)
 {
     struct v_script_load_ctx *lc;
@@ -118,6 +136,10 @@ static int request_script_load(uint8_t shard, v_script_id_t id, struct v_evalsha
     return RET_CODE_OK;
 }
 
+/* v_port_db_on_reconnect() hook: reloads all scripts to a shard on
+ * every (re)connect, including the very first connect at startup
+ * (plan.md §4 — the script cache is per-master and not replicated, so
+ * a Sentinel promotion means a fresh, empty cache on the new master). */
 static void script_reconnect_cb(uint8_t shard, void *arg)
 {
     (void)arg;
@@ -125,6 +147,10 @@ static void script_reconnect_cb(uint8_t shard, void *arg)
         request_script_load(shard, (v_script_id_t)id, NULL);
 }
 
+/* Public: registers the reconnect hook and allocates the SHA cache +
+ * pending-object pools. Must run before v_port_db_init(), so the
+ * initial per-shard connect events are caught by script_reconnect_cb()
+ * too, not just later Sentinel-promotion reconnects. */
 int v_db_script_init(void)
 {
     g_script_src[V_SCRIPT_SESS_CAS_WRITE] = V_LUA_SESS_CAS_WRITE;
@@ -158,6 +184,7 @@ int v_db_script_init(void)
     return v_port_db_on_reconnect(script_reconnect_cb, NULL);
 }
 
+/* Public: true once every shard has a cached SHA for every script. */
 int v_db_script_ready(void)
 {
     if (!g_sha)
@@ -169,6 +196,11 @@ int v_db_script_ready(void)
     return 1;
 }
 
+/* EVALSHA reply handler. Detects a NOSCRIPT error string and, on the
+ * first occurrence for this call, triggers request_script_load() with
+ * resume=p to reload and retry exactly once; any other outcome (success,
+ * a different error, or a second NOSCRIPT) is forwarded straight to the
+ * caller. */
 static void evalsha_reply_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     struct v_evalsha_pending *p = (struct v_evalsha_pending *)arg;
@@ -193,6 +225,8 @@ static void evalsha_reply_cb(int status, const v_db_reply_t *reply, void *arg)
     rte_mempool_put(g_evalsha_pool, p);
 }
 
+/* Dispatches (or re-dispatches, on retry) the EVALSHA using p's already-
+ * built part_ptr/part_len argv. */
 static void issue_evalsha(struct v_evalsha_pending *p)
 {
     if (v_port_db_cmd_argv(p->shard, evalsha_reply_cb, p, p->argc,
@@ -203,6 +237,10 @@ static void issue_evalsha(struct v_evalsha_pending *p)
     }
 }
 
+/* Public: builds the EVALSHA argv (SHA, numkeys, keys, argv — each
+ * copied into the pending object's own scratch buffer) and dispatches
+ * it. Fails fast if no SHA is cached yet for this shard/script rather
+ * than queuing — v_db_script_ready() exists so callers can avoid that. */
 int v_db_evalsha(uint8_t shard, v_script_id_t script_id,
                   int nkeys, const char **keys,
                   const char **argv, const size_t *argvlen, int nargv,

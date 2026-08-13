@@ -30,6 +30,8 @@
 #define V_STUB_DB_PENDING_CAP 4096
 #define V_STUB_DB_REPLY_SCRATCH_CAP 512
 
+/* One in-flight command — carries the caller's callback through to
+ * on_reply(), which hiredis invokes via privdata. */
 struct v_db_pending {
     v_db_cb_t cb;
     void *arg;
@@ -45,12 +47,14 @@ static void *g_reconnect_arg;
 static v_db_reply_t g_scratch[V_STUB_DB_REPLY_SCRATCH_CAP];
 static size_t g_scratch_used;
 
+/* Redis host, overridable via VPE_TEST_REDIS_HOST for the test suite. */
 static const char *db_host(void)
 {
     const char *h = getenv("VPE_TEST_REDIS_HOST");
     return h ? h : "127.0.0.1";
 }
 
+/* Redis port, overridable via VPE_TEST_REDIS_PORT. */
 static int db_port(void)
 {
     const char *p = getenv("VPE_TEST_REDIS_PORT");
@@ -60,6 +64,10 @@ static int db_port(void)
 static void connect_cb(const redisAsyncContext *c, int status);
 static void disconnect_cb(const redisAsyncContext *c, int status);
 
+/* (Re)connects one shard: opens a new hiredis async context, attaches
+ * it to the shared libevent base, and wires the connect/disconnect
+ * callbacks. Used both at startup (all 5 shards) and by
+ * v_stub_db_test_force_reconnect() (one shard, on demand). */
 static int shard_connect(int shard)
 {
     redisAsyncContext *ctx = redisAsyncConnect(db_host(), db_port());
@@ -78,6 +86,10 @@ static int shard_connect(int shard)
     return RET_CODE_OK;
 }
 
+/* hiredis connect callback: on success, fires the registered
+ * v_db_reconnect_cb_t — this fires for the VERY FIRST connect too, not
+ * just later reconnects, which is what lets v_db_script's SCRIPT LOAD-
+ * on-reconnect hook double as the initial script load. */
 static void connect_cb(const redisAsyncContext *c, int status)
 {
     int shard = (int)(intptr_t)c->data;
@@ -90,6 +102,9 @@ static void connect_cb(const redisAsyncContext *c, int status)
         g_reconnect_cb((uint8_t)shard, g_reconnect_arg);
 }
 
+/* hiredis disconnect callback: just clears the shard's context pointer
+ * — this stub doesn't auto-reconnect on an unexpected disconnect
+ * (that's what v_stub_db_test_force_reconnect() is for, on demand). */
 static void disconnect_cb(const redisAsyncContext *c, int status)
 {
     int shard = (int)(intptr_t)c->data;
@@ -100,6 +115,8 @@ static void disconnect_cb(const redisAsyncContext *c, int status)
         V_LOG(DEBUG, "DPDB", "shard %d disconnected", shard);
 }
 
+/* Port impl (Stage 1 addition — see include/v_port_db.h): creates the
+ * libevent base and pending-object pool, then connects all 5 shards. */
 int v_port_db_init(void)
 {
     if (g_base) {
@@ -126,6 +143,8 @@ int v_port_db_init(void)
     return RET_CODE_OK;
 }
 
+/* Port impl: tears down every shard connection, the pending pool, and
+ * the event base. */
 void v_port_db_fini(void)
 {
     for (int i = 0; i < V_STUB_DB_SHARDS; i++) {
@@ -144,6 +163,10 @@ void v_port_db_fini(void)
     }
 }
 
+/* Port impl: pumps the libevent loop once. Production binds the real
+ * DB layer's event loop to a worker's own libevent loop instead (the
+ * v_pdu_cacher pattern); this exists because Stage 1 has no such loop
+ * to bind to. */
 void v_port_db_poll(int nonblock)
 {
     if (!g_base)
@@ -163,6 +186,11 @@ int v_stub_db_test_force_reconnect(uint8_t shard)
     return shard_connect(shard);
 }
 
+/* Recursively converts a hiredis redisReply tree into the port's
+ * v_db_reply_t tree, bump-allocating nodes from the static g_scratch
+ * arena (reset at the top of every on_reply() call — see the lifetime
+ * note in include/v_port_db.h and CLAUDE.md: the result is only valid
+ * for the duration of the callback it's handed to). */
 static v_db_reply_t *convert_reply(redisReply *r)
 {
     if (g_scratch_used >= V_STUB_DB_REPLY_SCRATCH_CAP) {
@@ -226,6 +254,9 @@ static v_db_reply_t *convert_reply(redisReply *r)
     return out;
 }
 
+/* hiredis async-command reply trampoline: converts the raw reply,
+ * invokes the caller's v_db_cb_t, then releases the pending object.
+ * Shared by both v_port_db_cmd() and v_port_db_cmd_argv(). */
 static void on_reply(struct redisAsyncContext *c, void *r, void *privdata)
 {
     (void)c;
@@ -242,6 +273,8 @@ static void on_reply(struct redisAsyncContext *c, void *r, void *privdata)
     rte_mempool_put(g_pending_pool, p);
 }
 
+/* Grabs one pending-object slot and fills it in — shared setup for
+ * both command-dispatch functions below. */
 static struct v_db_pending *pending_get(v_db_cb_t cb, void *arg)
 {
     struct v_db_pending *p;
@@ -254,6 +287,10 @@ static struct v_db_pending *pending_get(v_db_cb_t cb, void *arg)
     return p;
 }
 
+/* Port impl: printf-style command dispatch (redisvAsyncCommand). Fine
+ * for commands with no binary/variable-arity arguments — see the
+ * lifetime/tokenization notes in include/v_port_db.h before using this
+ * for anything that isn't a simple fixed-arity command. */
 int v_port_db_cmd(uint8_t shard, v_db_cb_t cb, void *arg, const char *fmt, ...)
 {
     if (shard >= V_STUB_DB_SHARDS || !g_ctx[shard]) {
@@ -277,6 +314,10 @@ int v_port_db_cmd(uint8_t shard, v_db_cb_t cb, void *arg, const char *fmt, ...)
     return RET_CODE_OK;
 }
 
+/* Port impl (ADAPTATION, see include/v_port_db.h): binary-safe,
+ * explicit-argc/argv/argvlen command dispatch (redisAsyncCommandArgv).
+ * Required for any argument that may contain embedded NULs/spaces —
+ * v_db_script's EVALSHA and v_retrans_cache's store both use this. */
 int v_port_db_cmd_argv(uint8_t shard, v_db_cb_t cb, void *arg,
                         int argc, const char **argv, const size_t *argvlen)
 {
@@ -297,6 +338,11 @@ int v_port_db_cmd_argv(uint8_t shard, v_db_cb_t cb, void *arg,
     return RET_CODE_OK;
 }
 
+/* Port impl: FNV-1a over the whole key string. NOT guaranteed
+ * <partid>-derived — see v_id_alloc's shard_for_part() workaround and
+ * INTEGRATION.md §2 for why callers needing co-location of two
+ * different keys within one partition can't just call this directly
+ * on the full key. */
 uint8_t v_port_db_shard_of(const char *key)
 {
     /* FNV-1a, mod shard count. Deterministic and good enough for
@@ -309,11 +355,14 @@ uint8_t v_port_db_shard_of(const char *key)
     return (uint8_t)(h % V_STUB_DB_SHARDS);
 }
 
+/* Port impl: fixed at 5, matching plan.md's "5 master/slave pairs". */
 int v_port_db_shard_count(void)
 {
     return V_STUB_DB_SHARDS;
 }
 
+/* Port impl: stores the callback — fired by connect_cb() on every
+ * (re)connect, including the initial connect. */
 int v_port_db_on_reconnect(v_db_reconnect_cb_t cb, void *arg)
 {
     g_reconnect_cb = cb;

@@ -2,6 +2,8 @@
 #include "v_common.h"
 #include "v_log.h"
 
+/* Packs part_id + local into a SEID. Range-checks both fields against
+ * their bit widths before packing — see inc/v_seid.h for the layout. */
 int v_seid_encode(uint16_t part_id, uint64_t local, uint64_t *out)
 {
     if (part_id >= V_NUM_PARTS) {
@@ -18,16 +20,22 @@ int v_seid_encode(uint16_t part_id, uint64_t local, uint64_t *out)
     return RET_CODE_OK;
 }
 
+/* Pure bit extraction — no validation. Callers on untrusted input must
+ * validate first via v_seid_validate(). */
 uint16_t v_seid_part(uint64_t seid)
 {
     return (uint16_t)((seid >> V_SEID_PART_SHIFT) & V_SEID_PART_MASK);
 }
 
+/* Pure bit extraction — no validation. */
 uint64_t v_seid_local(uint64_t seid)
 {
     return seid & V_SEID_LOCAL_MASK;
 }
 
+/* Packs part_id + local into a TEID. local==0 is rejected here too —
+ * TEID 0 is reserved (plan.md §7), so this is the single choke point
+ * that keeps a 0 TEID from ever being minted. */
 int v_teid_encode(uint16_t part_id, uint32_t local, uint32_t *out)
 {
     if (part_id >= V_NUM_PARTS) {
@@ -43,16 +51,23 @@ int v_teid_encode(uint16_t part_id, uint32_t local, uint32_t *out)
     return RET_CODE_OK;
 }
 
+/* Pure bit extraction — no validation. */
 uint16_t v_teid_part(uint32_t teid)
 {
     return (uint16_t)((teid >> V_TEID_PART_SHIFT) & V_TEID_PART_MASK);
 }
 
+/* Pure bit extraction — no validation. */
 uint32_t v_teid_local(uint32_t teid)
 {
     return teid & V_TEID_LOCAL_MASK;
 }
 
+/* Attacker-input validation (plan.md §7): format version, reserved
+ * bits, and part_id range are checked, in that order, BEFORE part_id
+ * is ever used as an array index anywhere downstream. This ordering is
+ * the free5gc #730/#731 defense — don't reorder it. Only writes
+ * *part_out on success. */
 int v_seid_validate(uint64_t seid, uint16_t *part_out)
 {
     uint16_t part;
@@ -74,6 +89,8 @@ int v_seid_validate(uint64_t seid, uint16_t *part_out)
     return RET_CODE_OK;
 }
 
+/* Same defensive shape as v_seid_validate(), plus the TEID-specific
+ * "0 is reserved" check. */
 int v_teid_validate(uint32_t teid, uint16_t *part_out)
 {
     uint16_t part;

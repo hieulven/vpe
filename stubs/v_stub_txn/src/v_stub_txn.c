@@ -18,6 +18,8 @@ static uint64_t g_now_ms;
 static v_txn_timeout_cb_t g_timeout_cb;
 static void *g_timeout_arg;
 
+/* Port impl: allocates the txn object pool and resets the slot table
+ * + simulated clock. */
 int v_port_txn_init(void)
 {
     if (g_pool) {
@@ -36,6 +38,7 @@ int v_port_txn_init(void)
     return RET_CODE_OK;
 }
 
+/* Port impl: frees the pool and clears the slot table. */
 void v_port_txn_fini(void)
 {
     if (g_pool) {
@@ -45,6 +48,9 @@ void v_port_txn_fini(void)
     memset(g_slots, 0, sizeof(g_slots));
 }
 
+/* Port impl: finds a free slot (linear scan — fine at test scale, see
+ * CLAUDE.md), gets an object from the pool, and arms its hard-timeout
+ * deadline relative to the current simulated time. */
 struct v_txn *v_port_txn_create(void)
 {
     int slot = -1;
@@ -69,6 +75,8 @@ struct v_txn *v_port_txn_create(void)
     return t;
 }
 
+/* Linear search for t's slot index — used by destroy() to validate the
+ * pointer actually belongs to this table before freeing it. */
 static int slot_of(struct v_txn *t)
 {
     for (int i = 0; i < V_STUB_TXN_CAP; i++)
@@ -77,6 +85,9 @@ static int slot_of(struct v_txn *t)
     return -1;
 }
 
+/* Port impl: validates t belongs to this table (catches a double-free
+ * or a foreign pointer), frees the slot, and returns the object to the
+ * pool. */
 void v_port_txn_destroy(struct v_txn *t)
 {
     if (!t)
@@ -92,6 +103,9 @@ void v_port_txn_destroy(struct v_txn *t)
     rte_mempool_put(g_pool, t);
 }
 
+/* Port impl: linear scan matching on the held pfcp_msg's smf_fseid+seq
+ * — relies on callers setting t->req before any concurrent lookup
+ * could plausibly race it (see CLAUDE.md). */
 struct v_txn *v_port_txn_find_by_seq(uint64_t smf_fseid, uint32_t seq)
 {
     for (int i = 0; i < V_STUB_TXN_CAP; i++) {
@@ -104,6 +118,9 @@ struct v_txn *v_port_txn_find_by_seq(uint64_t smf_fseid, uint32_t seq)
     return NULL;
 }
 
+/* Port impl: linear scan matching on t->seid — the Stage 1 addition
+ * (not in plan.md §3.5's original draft) that lets a flow reach a live
+ * txn by the SEID/TEID it allocated. */
 struct v_txn *v_port_txn_find_by_seid(uint64_t seid)
 {
     for (int i = 0; i < V_STUB_TXN_CAP; i++) {
@@ -114,11 +131,15 @@ struct v_txn *v_port_txn_find_by_seid(uint64_t seid)
     return NULL;
 }
 
+/* Port impl: trivial field set — a real table might do more (e.g.
+ * update an index), this one doesn't need to. */
 void v_port_txn_set_state(struct v_txn *t, v_txn_state_t st)
 {
     t->state = st;
 }
 
+/* Port impl: registers the single hard-timeout callback — v_txn.c's
+ * timeout_handler is the only real caller in this codebase. */
 int v_port_txn_on_timeout(v_txn_timeout_cb_t cb, void *arg)
 {
     g_timeout_cb = cb;
@@ -126,6 +147,9 @@ int v_port_txn_on_timeout(v_txn_timeout_cb_t cb, void *arg)
     return RET_CODE_OK;
 }
 
+/* Test-only: advances the simulated clock and fires the timeout
+ * callback (at most once per txn, tracked via g_fired[]) for every txn
+ * whose deadline has now passed. */
 void v_port_txn_test_advance_ms(uint64_t ms)
 {
     g_now_ms += ms;
@@ -141,6 +165,8 @@ void v_port_txn_test_advance_ms(uint64_t ms)
     }
 }
 
+/* Test-only: exposes the constant every v_port_txn_create() arms its
+ * deadline with, so tests don't hard-code a second copy of it. */
 uint64_t v_port_txn_test_hard_timeout_ms(void)
 {
     return V_STUB_TXN_HARD_TIMEOUT_MS;

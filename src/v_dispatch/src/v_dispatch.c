@@ -15,6 +15,9 @@ static struct rte_ring *g_rx_ring;
 static struct rte_ring *g_tx_ring;
 static struct rte_mempool *g_msg_pool;
 
+/* Public: allocates the shared message-object pool and the rx/tx
+ * rings. Call once at startup, before registering v_dispatch_rx with
+ * v_port_pfcp_io_init(). */
 int v_dispatch_init(void)
 {
     g_msg_pool = rte_mempool_create("v_dispatch_msg_pool", V_DISPATCH_POOL_CAP,
@@ -39,6 +42,7 @@ int v_dispatch_init(void)
     return RET_CODE_OK;
 }
 
+/* Public: frees both rings and the message pool. */
 void v_dispatch_fini(void)
 {
     if (g_rx_ring) { rte_ring_free(g_rx_ring); g_rx_ring = NULL; }
@@ -46,6 +50,10 @@ void v_dispatch_fini(void)
     if (g_msg_pool) { rte_mempool_free(g_msg_pool); g_msg_pool = NULL; }
 }
 
+/* Public, I/O-core side: the v_pfcp_rx_cb_t itself. Pure byte copy onto
+ * the shared rx ring — no PFCP parsing (architecture rule 1). Drops
+ * (with a log) on an oversized datagram, an exhausted pool, or a full
+ * ring; never blocks. */
 void v_dispatch_rx(const uint8_t *buf, size_t len, const struct sockaddr *peer, void *arg)
 {
     (void)arg;
@@ -75,6 +83,10 @@ void v_dispatch_rx(const uint8_t *buf, size_t len, const struct sockaddr *peer, 
     }
 }
 
+/* Public, worker side: drains up to max messages from the shared rx
+ * ring, calling handler() for each and releasing the message object
+ * afterward. worker_id is unused — any worker may dequeue any message
+ * (see the design note in inc/v_dispatch.h). */
 unsigned v_dispatch_worker_poll(unsigned worker_id, unsigned max,
                                  v_dispatch_handler_t handler, void *arg)
 {
@@ -91,6 +103,8 @@ unsigned v_dispatch_worker_poll(unsigned worker_id, unsigned max,
     return n;
 }
 
+/* Public, worker side: the only way a worker reaches the network —
+ * queues an outbound datagram for the I/O core to actually send. */
 int v_dispatch_tx_enqueue(const uint8_t *buf, size_t len, const struct sockaddr *peer)
 {
     if (len > V_DISPATCH_MSG_MAX_BYTES) {
@@ -119,6 +133,9 @@ int v_dispatch_tx_enqueue(const uint8_t *buf, size_t len, const struct sockaddr 
     return RET_CODE_OK;
 }
 
+/* Public, I/O-core side: drains up to max queued outbound datagrams
+ * and actually sends each via v_port_pfcp_io_send() — the only call
+ * site in the whole codebase allowed to call it (architecture rule 2). */
 unsigned v_dispatch_io_drain_tx(unsigned max)
 {
     unsigned n = 0;

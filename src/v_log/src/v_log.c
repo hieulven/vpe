@@ -6,6 +6,8 @@
 
 static v_log_level_t g_min_level = V_LOG_INFO;
 
+/* Renders a level enum as the fixed-width string printed in every
+ * log line. */
 static const char *level_str(v_log_level_t level)
 {
     switch (level) {
@@ -19,11 +21,14 @@ static const char *level_str(v_log_level_t level)
     }
 }
 
+/* Public: sets the minimum level actually printed. */
 void v_log_set_min_level(v_log_level_t level)
 {
     g_min_level = level;
 }
 
+/* Public, invoked via the V_LOG() macro — never called directly.
+ * Prints "[epoch.ms] LEVEL   MODULE file:line: message". */
 void v_log_write(v_log_level_t level, const char *module,
                   const char *file, int line, const char *fmt, ...)
 {

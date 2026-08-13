@@ -11,6 +11,9 @@
 #define V_STUB_PFCP_MSG_POOL_CAP 4096
 #define V_STUB_TX_BUF_CAP 512
 
+/* The stub's own decoded-message representation — bears no relation to
+ * a real PFCP message, just enough fields for every port accessor
+ * below and for src/v_flow.c to exercise every branch it needs to. */
 struct pfcp_msg {
     uint32_t magic;
     uint8_t  type;
@@ -31,6 +34,7 @@ static void *g_rx_arg;
 static uint8_t g_last_tx[V_STUB_TX_BUF_CAP];
 static size_t g_last_tx_len;
 
+/* Lazily creates the pfcp_msg object pool on first use. */
 static int ensure_msg_pool(void)
 {
     if (g_msg_pool)
@@ -46,6 +50,8 @@ static int ensure_msg_pool(void)
     return RET_CODE_OK;
 }
 
+/* Port impl: stores the rx callback for v_stub_pfcp_io_inject_rx() to
+ * invoke later — no real socket exists in this stub. */
 int v_port_pfcp_io_init(v_pfcp_rx_cb_t cb, void *arg)
 {
     if (ensure_msg_pool() != RET_CODE_OK)
@@ -56,6 +62,9 @@ int v_port_pfcp_io_init(v_pfcp_rx_cb_t cb, void *arg)
     return RET_CODE_OK;
 }
 
+/* Port impl: captures the bytes into g_last_tx instead of sending
+ * anywhere — v_stub_pfcp_io_last_tx()/_reset() are how tests observe
+ * what would have been sent. */
 int v_port_pfcp_io_send(const struct sockaddr *peer, const uint8_t *buf, size_t len)
 {
     (void)peer;
@@ -68,6 +77,8 @@ int v_port_pfcp_io_send(const struct sockaddr *peer, const uint8_t *buf, size_t 
     return RET_CODE_OK;
 }
 
+/* Port impl: parses the stub's synthetic struct v_stub_wire_req (see
+ * v_stub_common.h) into a pool-allocated pfcp_msg. */
 int v_port_pfcp_decode(const uint8_t *buf, size_t len, struct pfcp_msg **out)
 {
     if (len < sizeof(struct v_stub_wire_req)) {
@@ -98,6 +109,8 @@ int v_port_pfcp_decode(const uint8_t *buf, size_t len, struct pfcp_msg **out)
     return RET_CODE_OK;
 }
 
+/* Port impl: magic-checked free (catches a double-free or a foreign
+ * pointer) then returns the block to the pool. */
 void v_port_pfcp_msg_free(struct pfcp_msg *msg)
 {
     if (!msg)
@@ -110,11 +123,14 @@ void v_port_pfcp_msg_free(struct pfcp_msg *msg)
     rte_mempool_put(g_msg_pool, msg);
 }
 
+/* Port impls: trivial field accessors on the decoded message. */
 uint8_t v_port_pfcp_msg_type(const struct pfcp_msg *m) { return m->type; }
 uint64_t v_port_pfcp_hdr_seid(const struct pfcp_msg *m) { return m->seid; }
 uint32_t v_port_pfcp_seq(const struct pfcp_msg *m) { return m->seq; }
 uint64_t v_port_pfcp_smf_fseid(const struct pfcp_msg *m) { return m->smf_fseid; }
 
+/* Port impl: RET_CODE_ERR if the message carries no UE IP — callers
+ * (v_flow's part_id selection) treat that as "use round-robin instead". */
 int v_port_pfcp_ue_ip(const struct pfcp_msg *m, uint32_t *v4, uint8_t v6[16])
 {
     if (!m->has_ue_ip)
@@ -126,12 +142,17 @@ int v_port_pfcp_ue_ip(const struct pfcp_msg *m, uint32_t *v4, uint8_t v6[16])
     return RET_CODE_OK;
 }
 
+/* Deterministic payload derived from seed — this is what
+ * test_sess_store.c/test_flow_mod_del.c compare against to prove data
+ * actually changed (or didn't), not just that a call returned OK. */
 static void fill_pattern(struct v_stub_ses_ctx *c, uint32_t seed)
 {
     for (size_t i = 0; i < sizeof(c->payload); i++)
         c->payload[i] = (uint8_t)(seed + i);
 }
 
+/* Port impl: fills ctx with the session's identifying fields plus a
+ * seq-derived pattern. */
 int v_port_pfcp_build_session(const struct pfcp_msg *req,
                                uint64_t seid, uint32_t teid,
                                struct pdu_ses_ctx *ctx)
@@ -146,6 +167,8 @@ int v_port_pfcp_build_session(const struct pfcp_msg *req,
     return RET_CODE_OK;
 }
 
+/* Port impl: XORs the pattern with a different constant so tests can
+ * tell a modified session's payload apart from a freshly-built one. */
 int v_port_pfcp_modify_session(const struct pfcp_msg *req, struct pdu_ses_ctx *ctx)
 {
     struct v_stub_ses_ctx *c = (struct v_stub_ses_ctx *)ctx;
@@ -153,6 +176,7 @@ int v_port_pfcp_modify_session(const struct pfcp_msg *req, struct pdu_ses_ctx *c
     return RET_CODE_OK;
 }
 
+/* Port impl: no-op — deletion doesn't mutate ctx in this stub. */
 int v_port_pfcp_delete_session(const struct pfcp_msg *req, struct pdu_ses_ctx *ctx)
 {
     (void)req;
@@ -160,11 +184,16 @@ int v_port_pfcp_delete_session(const struct pfcp_msg *req, struct pdu_ses_ctx *c
     return RET_CODE_OK;
 }
 
+/* Port impl (ADAPTATION, see include/v_port_pfcp.h): pulls the TEID
+ * back out of a previously-built ctx, for v_flow's deletion path. */
 uint32_t v_port_pfcp_ctx_teid(const struct pdu_ses_ctx *ctx)
 {
     return ((const struct v_stub_ses_ctx *)ctx)->teid;
 }
 
+/* Port impl: builds the synthetic response header. ctx==NULL forces
+ * seid=0 in the response — this is how v_flow signals "Session context
+ * not found" per plan.md §7. */
 int v_port_pfcp_encode_rsp(const struct pfcp_msg *req, const struct pdu_ses_ctx *ctx,
                             uint8_t cause, uint8_t *buf, size_t *len)
 {
@@ -183,6 +212,11 @@ int v_port_pfcp_encode_rsp(const struct pfcp_msg *req, const struct pdu_ses_ctx 
     return RET_CODE_OK;
 }
 
+/* Port impl: the "serializer" is just a raw memcpy of the internal
+ * struct — real production serialization is presumably a real wire
+ * encoding, but the round-trip contract (serialize then deserialize
+ * reproduces the original bytes) is what v_sess_store depends on, and
+ * this satisfies it. */
 int v_port_pdu_serialize(const struct pdu_ses_ctx *ctx, uint8_t *buf, size_t *len)
 {
     if (*len < sizeof(struct v_stub_ses_ctx))
@@ -192,6 +226,7 @@ int v_port_pdu_serialize(const struct pdu_ses_ctx *ctx, uint8_t *buf, size_t *le
     return RET_CODE_OK;
 }
 
+/* Port impl: inverse of v_port_pdu_serialize(). */
 int v_port_pdu_deserialize(const uint8_t *buf, size_t len, struct pdu_ses_ctx *ctx)
 {
     if (len < sizeof(struct v_stub_ses_ctx))
@@ -202,6 +237,8 @@ int v_port_pdu_deserialize(const uint8_t *buf, size_t len, struct pdu_ses_ctx *c
 
 /* --- test-only surface --- */
 
+/* Encodes desc into the stub wire format — the standalone test suite's
+ * only way to construct a "received datagram". */
 size_t v_stub_pfcp_encode(const v_stub_pfcp_desc_t *desc, uint8_t *buf, size_t buf_cap)
 {
     if (buf_cap < sizeof(struct v_stub_wire_req))
@@ -219,12 +256,16 @@ size_t v_stub_pfcp_encode(const v_stub_pfcp_desc_t *desc, uint8_t *buf, size_t b
     return sizeof(wire);
 }
 
+/* Synchronously invokes the rx callback registered via
+ * v_port_pfcp_io_init(), as if a UDP datagram had just arrived — this
+ * is how every test_flow_*.c test injects inbound traffic. */
 void v_stub_pfcp_io_inject_rx(const uint8_t *buf, size_t len, const struct sockaddr *peer)
 {
     if (g_rx_cb)
         g_rx_cb(buf, len, peer, g_rx_arg);
 }
 
+/* Returns whatever the most recent v_port_pfcp_io_send() call sent. */
 size_t v_stub_pfcp_io_last_tx(uint8_t *out, size_t out_cap)
 {
     size_t n = g_last_tx_len < out_cap ? g_last_tx_len : out_cap;
@@ -233,6 +274,8 @@ size_t v_stub_pfcp_io_last_tx(uint8_t *out, size_t out_cap)
     return g_last_tx_len;
 }
 
+/* Clears the captured last-sent buffer — call between test cases so a
+ * stale send from a previous test can't be mistaken for a fresh one. */
 void v_stub_pfcp_io_reset(void)
 {
     g_last_tx_len = 0;

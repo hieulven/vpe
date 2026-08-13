@@ -24,6 +24,7 @@ static struct rte_mempool *g_pool;
 
 typedef enum { OP_RECOVERY, OP_SIMPLE, OP_ASSOC_QUERY } op_t;
 
+/* One in-flight node_state call. */
 struct pending {
     op_t op;
     void *arg;
@@ -34,6 +35,7 @@ struct pending {
     } u;
 };
 
+/* Lazily creates the pending-object pool on first use. */
 static int ensure_pool(void)
 {
     if (g_pool)
@@ -48,6 +50,8 @@ static int ensure_pool(void)
     return RET_CODE_OK;
 }
 
+/* Public: hex-encodes node_id into the module's Redis key namespace
+ * and allocates the pending pool. Call once at startup. */
 int v_node_state_init(const uint8_t *node_id, size_t node_id_len)
 {
     if (node_id_len == 0 || node_id_len > V_NODE_ID_MAX_BYTES) {
@@ -68,6 +72,8 @@ int v_node_state_init(const uint8_t *node_id, size_t node_id_len)
     return RET_CODE_OK;
 }
 
+/* Public: frees the pending pool and resets the cached recovery_ts
+ * readiness flag. */
 void v_node_state_fini(void)
 {
     if (g_pool) {
@@ -77,6 +83,8 @@ void v_node_state_fini(void)
     g_recovery_ts_ready = 0;
 }
 
+/* Grabs one pending-object slot, logging (not silently dropping) on
+ * exhaustion. */
 static struct pending *pending_get(void)
 {
     struct pending *p;
@@ -87,6 +95,10 @@ static struct pending *pending_get(void)
     return p;
 }
 
+/* SET...NX GET reply handler: a STRING reply is the pre-existing value
+ * (an earlier cold start won, that value is authoritative); NIL means
+ * this call's SET actually landed (this boot won). Either way the
+ * result is cached for v_node_state_recovery_ts(). */
 static void recovery_reply_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     struct pending *p = (struct pending *)arg;
@@ -117,6 +129,9 @@ static void recovery_reply_cb(int status, const v_db_reply_t *reply, void *arg)
     cb(RET_CODE_OK, g_recovery_ts, user_arg);
 }
 
+/* Public: one round trip (SET...NX GET) to establish or read back the
+ * node's Recovery Time Stamp. See recovery_reply_cb() for how the
+ * result is decided. Call once at startup; result is cached. */
 int v_node_state_load_recovery_ts(v_node_state_recovery_cb_t cb, void *arg)
 {
     struct pending *p = pending_get();
@@ -135,6 +150,9 @@ int v_node_state_load_recovery_ts(v_node_state_recovery_cb_t cb, void *arg)
     return RET_CODE_OK;
 }
 
+/* Public: deliberate-cold-start-only unconditional SET — see
+ * inc/v_node_state.h for why this must never be called from a rolling-
+ * update path. */
 int v_node_state_force_new_recovery_ts(v_node_state_recovery_cb_t cb, void *arg)
 {
     struct pending *p = pending_get();
@@ -154,16 +172,21 @@ int v_node_state_force_new_recovery_ts(v_node_state_recovery_cb_t cb, void *arg)
     return RET_CODE_OK;
 }
 
+/* Public: cached accessor for the heartbeat hot path — never touches
+ * Redis. Only meaningful once v_node_state_recovery_ts_ready() is true. */
 uint32_t v_node_state_recovery_ts(void)
 {
     return g_recovery_ts;
 }
 
+/* Public: true once v_node_state_load_recovery_ts()'s round trip has
+ * completed. */
 int v_node_state_recovery_ts_ready(void)
 {
     return g_recovery_ts_ready;
 }
 
+/* Ack-only callback shared by set_associated()/clear_associated(). */
 static void simple_ack_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     (void)reply;
@@ -174,6 +197,8 @@ static void simple_ack_cb(int status, const v_db_reply_t *reply, void *arg)
     cb(status, user_arg);
 }
 
+/* Public: HSET the association hash to "associated, with this SMF" —
+ * visible to every pod, not just this one. */
 int v_node_state_set_associated(uint64_t smf_node_id_hash, v_node_state_cb_t cb, void *arg)
 {
     struct pending *p = pending_get();
@@ -192,6 +217,7 @@ int v_node_state_set_associated(uint64_t smf_node_id_hash, v_node_state_cb_t cb,
     return RET_CODE_OK;
 }
 
+/* Public: HSET the association hash to "not associated". */
 int v_node_state_clear_associated(v_node_state_cb_t cb, void *arg)
 {
     struct pending *p = pending_get();
@@ -209,6 +235,8 @@ int v_node_state_clear_associated(v_node_state_cb_t cb, void *arg)
     return RET_CODE_OK;
 }
 
+/* HMGET reply handler: NIL "associated" field means never associated;
+ * otherwise parses the "1"/"0" flag and, if set, the SMF identifier. */
 static void assoc_query_reply_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     struct pending *p = (struct pending *)arg;
@@ -242,6 +270,9 @@ static void assoc_query_reply_cb(int status, const v_db_reply_t *reply, void *ar
     cb(RET_CODE_OK, associated, smf, user_arg);
 }
 
+/* Public: HMGET the association hash — lets a pod that boots mid-
+ * association (or any pod, on every heartbeat) learn the current state
+ * from Redis rather than local memory. */
 int v_node_state_query_associated(v_node_state_assoc_cb_t cb, void *arg)
 {
     struct pending *p = pending_get();

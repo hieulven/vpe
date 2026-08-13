@@ -20,6 +20,9 @@
 
 typedef enum { V_SESS_OP_READ, V_SESS_OP_CAS, V_SESS_OP_SIMPLE } v_sess_op_t;
 
+/* One in-flight session-store call. `op` isn't read anywhere today
+ * (the union member accessed is always known from which function
+ * created the pending object) — kept for clarity/future assertions. */
 struct v_sess_pending {
     v_sess_op_t op;
     void *arg;
@@ -32,6 +35,7 @@ struct v_sess_pending {
 
 static struct rte_mempool *g_pending_pool;
 
+/* Lazily creates the pending-object pool on first use. */
 static int ensure_pool(void)
 {
     if (g_pending_pool)
@@ -46,6 +50,8 @@ static int ensure_pool(void)
     return RET_CODE_OK;
 }
 
+/* Formats the fixed pdu_<partid>:<seid> key — see inc/v_sess_store.h,
+ * this format string MUST NOT CHANGE (plan.md environment facts). */
 static void make_key(char *buf, size_t buf_cap, uint16_t part_id, uint64_t seid)
 {
     snprintf(buf, buf_cap, V_SESS_KEY_FMT, part_id, seid);
@@ -53,6 +59,9 @@ static void make_key(char *buf, size_t buf_cap, uint16_t part_id, uint64_t seid)
 
 /* --- read --- */
 
+/* HMGET reply handler. A NIL data or ver field means the key doesn't
+ * exist — reported as V_CAS_GONE with RET_CODE_OK (the read itself
+ * succeeded; "not found" is a normal outcome, not a transport error). */
 static void read_reply_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     struct v_sess_pending *p = (struct v_sess_pending *)arg;
@@ -93,6 +102,8 @@ static void read_reply_cb(int status, const v_db_reply_t *reply, void *arg)
     rte_mempool_put(g_pending_pool, p);
 }
 
+/* Public: HMGET data+ver in one round trip, deserializing directly
+ * into caller-owned ctx on a hit. */
 int v_sess_read(uint16_t part_id, uint64_t seid, struct pdu_ses_ctx *ctx,
                  v_sess_read_cb_t cb, void *arg)
 {
@@ -123,6 +134,11 @@ int v_sess_read(uint16_t part_id, uint64_t seid, struct pdu_ses_ctx *ctx,
 
 /* --- cas write --- */
 
+/* v_sess_cas_write Lua script reply handler — maps the script's
+ * integer return (1/0/-1, see inc/v_db_lua_scripts.h) to a
+ * v_cas_result_t. new_ver is computed client-side from exp_ver rather
+ * than re-read from Redis, since the script's own increment logic is
+ * exactly "exp_ver==0 ? 1 : exp_ver+1". */
 static void cas_write_reply_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     struct v_sess_pending *p = (struct v_sess_pending *)arg;
@@ -157,6 +173,11 @@ static void cas_write_reply_cb(int status, const v_db_reply_t *reply, void *arg)
     rte_mempool_put(g_pending_pool, p);
 }
 
+/* Public: serializes ctx synchronously (into a stack buffer, before
+ * this function returns) then dispatches the CAS-write Lua script.
+ * Because the serialize happens synchronously here, a caller is free
+ * to free/reuse ctx immediately after this call returns — it does not
+ * need to stay alive until the callback fires. */
 int v_sess_cas_write(uint16_t part_id, uint64_t seid, uint64_t exp_ver,
                       const struct pdu_ses_ctx *ctx, v_sess_state_t state,
                       v_sess_cas_cb_t cb, void *arg)
@@ -204,6 +225,9 @@ int v_sess_cas_write(uint16_t part_id, uint64_t seid, uint64_t exp_ver,
 
 /* --- confirm (PERSIST) --- */
 
+/* PERSIST reply handler — the integer result (0 or 1, whether a TTL
+ * existed to remove) doesn't matter to the caller, only whether the
+ * round trip itself succeeded. */
 static void confirm_reply_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     (void)reply;
@@ -215,6 +239,7 @@ static void confirm_reply_cb(int status, const v_db_reply_t *reply, void *arg)
     rte_mempool_put(g_pending_pool, p);
 }
 
+/* Public: PERSIST — clears the pending TTL without touching ver. */
 int v_sess_confirm(uint16_t part_id, uint64_t seid, v_sess_cb_t cb, void *arg)
 {
     if (ensure_pool() != RET_CODE_OK)
@@ -242,6 +267,9 @@ int v_sess_confirm(uint16_t part_id, uint64_t seid, v_sess_cb_t cb, void *arg)
 
 /* --- delete --- */
 
+/* v_sess_delete Lua script reply handler — same 1/0/-1 -> CAS-result
+ * mapping as cas_write_reply_cb(), but delete has no "new_ver" to
+ * compute (always passes 0). */
 static void delete_reply_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     struct v_sess_pending *p = (struct v_sess_pending *)arg;
@@ -267,6 +295,7 @@ static void delete_reply_cb(int status, const v_db_reply_t *reply, void *arg)
     rte_mempool_put(g_pending_pool, p);
 }
 
+/* Public: CAS-guarded DEL. */
 int v_sess_delete(uint16_t part_id, uint64_t seid, uint64_t exp_ver,
                    v_sess_cas_cb_t cb, void *arg)
 {
@@ -302,6 +331,8 @@ int v_sess_delete(uint16_t part_id, uint64_t seid, uint64_t exp_ver,
     return RET_CODE_OK;
 }
 
+/* Test-only: pending-pool leak assertion helper (see
+ * inc/v_sess_store.h). */
 size_t v_sess_store_test_pending_in_use(void)
 {
     if (!g_pending_pool)

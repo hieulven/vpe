@@ -22,6 +22,10 @@ static uint8_t *g_teid_refill_inflight;
 static uint8_t *g_teid_next_seeded;
 static int g_initialized;
 
+/* Hashes just the decimal part_id, not a full key — guarantees
+ * co-location of vpe:teid:<part>:free and vpe:teid:<part>:next on the
+ * same shard regardless of whether v_port_db_shard_of() is itself
+ * partid-derived (see CLAUDE.md and INTEGRATION.md). */
 static uint8_t shard_for_part(uint16_t part_id)
 {
     char buf[8];
@@ -31,6 +35,9 @@ static uint8_t shard_for_part(uint16_t part_id)
 
 /* --- SEID: plain INCRBY block lease, no Lua needed (single key). --- */
 
+/* INCRBY reply handler: the returned counter value is the END of the
+ * newly leased block, so the block's start is value - V_ID_BLK_SIZE.
+ * Encodes and enqueues every id in the block. */
 static void seid_refill_reply_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     uint16_t part_id = (uint16_t)(uintptr_t)arg;
@@ -56,6 +63,9 @@ static void seid_refill_reply_cb(int status, const v_db_reply_t *reply, void *ar
     V_LOG(DEBUG, "DPDB", "seid refill done part=%u base=%lu count=%u", part_id, base, V_ID_BLK_SIZE);
 }
 
+/* Triggers an async block lease when a partition's SEID ring drops
+ * below the watermark. No-op if a refill for this partition is already
+ * in flight (at most one outstanding INCRBY per ring). */
 static void seid_maybe_refill(uint16_t part_id)
 {
     if (rte_ring_count(g_seid_ring[part_id]) >= V_ID_WATERMARK)
@@ -75,6 +85,9 @@ static void seid_maybe_refill(uint16_t part_id)
     }
 }
 
+/* Public: dequeue one SEID for part_id, kicking off a background
+ * refill first if the ring is running low. Returns 0 (never a valid
+ * SEID) if the ring is dry — caller maps that to NO_RESOURCES_AVAILABLE. */
 uint64_t v_seid_alloc(uint16_t part_id)
 {
     seid_maybe_refill(part_id);
@@ -89,6 +102,9 @@ uint64_t v_seid_alloc(uint16_t part_id)
 
 /* --- TEID: prefer free list, fall back to counter (v_db_script Lua). --- */
 
+/* Parses one Redis bulk-string array element as a decimal integer —
+ * every element of the teid_refill Lua script's reply arrives as a
+ * string, regardless of the tag ("range" or "list"). */
 static int parse_u64(const v_db_reply_t *r, uint64_t *out)
 {
     if (!r || r->type != V_DB_REPLY_STRING || !r->str)
@@ -101,6 +117,9 @@ static int parse_u64(const v_db_reply_t *r, uint64_t *out)
     return RET_CODE_OK;
 }
 
+/* Encodes a local index into a full TEID and enqueues it — shared by
+ * both the "range" (fresh from the counter) and "list" (reclaimed from
+ * the free list) branches of teid_refill_reply_cb(). */
 static void enqueue_teid(uint16_t part_id, uint64_t local)
 {
     uint32_t teid;
@@ -112,6 +131,9 @@ static void enqueue_teid(uint16_t part_id, uint64_t local)
         V_LOG(WARNING, "DPDB", "teid ring full during refill part=%u", part_id);
 }
 
+/* teid_refill Lua script reply handler. Reply is a tagged array:
+ * {'range', start, count} when pulled from the counter, or
+ * {'list', id, id, ...} when pulled from the free list (plan.md §6.3). */
 static void teid_refill_reply_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     uint16_t part_id = (uint16_t)(uintptr_t)arg;
@@ -154,6 +176,8 @@ static void teid_refill_reply_cb(int status, const v_db_reply_t *reply, void *ar
     }
 }
 
+/* Ack-only callback for the one-time SETNX that seeds a partition's
+ * TEID counter to 1 (see the ordering comment in teid_maybe_refill()). */
 static void seed_reply_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     (void)reply; (void)arg;
@@ -161,6 +185,8 @@ static void seed_reply_cb(int status, const v_db_reply_t *reply, void *arg)
         V_LOG(ERR, "DPDB", "teid next-counter seed failed");
 }
 
+/* Triggers an async teid_refill Lua call when a partition's TEID ring
+ * drops below the watermark. Same in-flight guard as seid_maybe_refill(). */
 static void teid_maybe_refill(uint16_t part_id)
 {
     if (rte_ring_count(g_teid_ring[part_id]) >= V_ID_WATERMARK)
@@ -202,6 +228,8 @@ static void teid_maybe_refill(uint16_t part_id)
     }
 }
 
+/* Public: dequeue one TEID for part_id. Same dry-ring/refill shape as
+ * v_seid_alloc(); 0 is the "none available" sentinel here too. */
 uint32_t v_teid_alloc(uint16_t part_id)
 {
     teid_maybe_refill(part_id);
@@ -214,6 +242,8 @@ uint32_t v_teid_alloc(uint16_t part_id)
     return (uint32_t)(uintptr_t)obj;
 }
 
+/* Ack-only callback for the free-list RPUSH — a lost ack just means the
+ * id sits unreclaimed a little longer, never a correctness issue. */
 static void teid_free_reply_cb(int status, const v_db_reply_t *reply, void *arg)
 {
     (void)reply; (void)arg;
@@ -221,6 +251,8 @@ static void teid_free_reply_cb(int status, const v_db_reply_t *reply, void *arg)
         V_LOG(ERR, "DPDB", "teid free RPUSH failed");
 }
 
+/* Public: return a TEID's local index to the partition's Redis free
+ * list. Deliberately no v_seid_free() counterpart — see plan.md §6.3. */
 void v_teid_free(uint16_t part_id, uint32_t teid)
 {
     char key[32];
@@ -234,6 +266,10 @@ void v_teid_free(uint16_t part_id, uint32_t teid)
 
 /* --- lifecycle --- */
 
+/* Public: allocates the 1024 SEID/TEID ring pairs and their
+ * bookkeeping arrays, then immediately fires an initial refill for
+ * every partition. Callers must wait for v_id_alloc_ready() before
+ * accepting traffic. */
 int v_id_alloc_init(void)
 {
     if (g_initialized) {
@@ -276,6 +312,7 @@ int v_id_alloc_init(void)
     return RET_CODE_OK;
 }
 
+/* Public: frees every ring and bookkeeping array. */
 void v_id_alloc_fini(void)
 {
     if (!g_initialized)
@@ -294,6 +331,9 @@ void v_id_alloc_fini(void)
     g_initialized = 0;
 }
 
+/* Public: true once every partition's SEID and TEID ring has received
+ * at least its first refill. O(V_NUM_PARTS) — fine for a startup-time
+ * poll, not meant to be called on the hot path. */
 int v_id_alloc_ready(void)
 {
     if (!g_initialized)
