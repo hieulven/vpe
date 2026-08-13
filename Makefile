@@ -16,7 +16,8 @@ WARN     := -Wall -Wextra
 DPDK_CFLAGS := $(shell pkg-config --cflags libdpdk)
 DPDK_LIBS   := $(shell pkg-config --libs libdpdk)
 
-INCLUDES := -Iinclude -Istubs
+MODULE_DIRS := $(filter %/,$(wildcard src/*/ stubs/*/))
+INCLUDES := -Iinclude -Istubs -Itest $(addprefix -I,$(MODULE_DIRS))
 CFLAGS   := $(STD) $(WARN) -g -MMD -MP $(INCLUDES) $(DPDK_CFLAGS)
 LDLIBS   := $(DPDK_LIBS) -lhiredis -levent -lpthread -lm
 
